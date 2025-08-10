@@ -1,5 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, Send, Image, Bot, User, Loader2, CheckCircle, AlertCircle, Sparkles, Brain, Zap, MessageSquare, X } from 'lucide-react';
+import './AIchatbot.css';
+
+const API_BASE_URL = 'http://127.0.0.1:8000';
 
 const AIChatbot = () => {
   // 상태 관리
@@ -38,23 +41,127 @@ const AIChatbot = () => {
     processFiles(files);
   };
   
-  // 파일 처리
-  const processFiles = (files) => {
-    files.forEach(file => {
-      if (file.type.startsWith('image/')) {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          setUploadedImages(prev => [...prev, {
-            id: Date.now() + Math.random(),
-            url: event.target.result,
-            name: file.name,
-            size: (file.size / 1024).toFixed(2) + ' KB',
-            status: 'uploaded'
-          }]);
-        };
-        reader.readAsDataURL(file);
+    // 파일 크기 포맷팅 함수
+  const formatFileSize = (bytes) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+  
+  // 파일 처리 - 백엔드 전송 + 화면 표시
+  const processFiles = async (files) => {
+    const imageFiles = files.filter(file => file.type.startsWith('image/'));
+    
+    if (imageFiles.length === 0) {
+      alert('이미지 파일만 업로드 가능합니다.');
+      return;
+    }
+    
+    // 파일 크기 체크 (10MB 제한)
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    const validFiles = imageFiles.filter(file => {
+      if (file.size > maxSize) {
+        alert(`${file.name}은(는) 파일 크기가 너무 큽니다. (최대 10MB)`);
+        return false;
       }
+      return true;
     });
+    
+    if (validFiles.length === 0) return;
+    
+    // 1. 먼저 화면에 표시할 데이터 생성 (미리보기용)
+    const processedFiles = await Promise.all(
+      validFiles.map(async (file) => {
+        return new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            resolve({
+              id: Date.now() + Math.random(),
+              name: file.name,
+              size: formatFileSize(file.size),
+              type: file.type,
+              url: e.target.result,
+              file: file,
+              uploadStatus: 'uploading' // 업로드 상태 추가
+            });
+          };
+          reader.readAsDataURL(file);
+        });
+      })
+    );
+    
+    // 2. 화면에 즉시 표시 (업로딩 상태로)
+    setUploadedImages(prev => [...prev, ...processedFiles]);
+    
+    // 3. 백엔드로 파일 전송
+    try {
+      const formData = new FormData();
+      
+      // 파일들을 FormData에 추가
+      validFiles.forEach((file, index) => {
+        formData.append('files', file);  // 같은 key로 여러 파일
+        formData.append(`file_${index}`, file);  // 개별 key로도 파일 추가
+      });
+      
+      // 메타데이터 추가
+      formData.append('totalFiles', validFiles.length);
+      formData.append('timestamp', new Date().toISOString());
+      
+      // 백엔드로 전송
+      const response = await fetch(`${API_BASE_URL}/api/upload-multiple`, {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('업로드 성공:', result);
+        
+        // 업로드 성공 시 상태 업데이트
+        setUploadedImages(prev => 
+          prev.map(img => 
+            processedFiles.some(pf => pf.id === img.id) 
+              ? { ...img, uploadStatus: 'success', serverId: result.fileIds?.[img.name] }
+              : img
+          )
+        );
+        
+        // 성공 메시지 표시
+        setMessages(prev => [...prev, {
+          id: Date.now(),
+          type: 'system',
+          content: `📁 ${validFiles.length}개의 이미지가 성공적으로 업로드되었습니다.`,
+          timestamp: new Date()
+        }]);
+        
+      } else {
+        throw new Error(`업로드 실패: ${response.status} ${response.statusText}`);
+      }
+      
+    } catch (error) {
+      console.error('업로드 에러:', error);
+      
+      // 업로드 실패 시 상태 업데이트
+      setUploadedImages(prev => 
+        prev.map(img => 
+          processedFiles.some(pf => pf.id === img.id) 
+            ? { ...img, uploadStatus: 'error' }
+            : img
+        )
+      );
+      
+      // 에러 메시지 표시
+      setMessages(prev => [...prev, {
+        id: Date.now(),
+        type: 'system',
+        content: `❌ 업로드 중 오류가 발생했습니다: ${error.message}`,
+        timestamp: new Date()
+      }]);
+      
+      alert(`업로드 실패: ${error.message}`);
+    }
   };
   
   const handleImageUpload = (e) => {
@@ -147,528 +254,6 @@ const AIChatbot = () => {
 
   return (
     <>
-      <style>{`
-        * {
-          margin: 0;
-          padding: 0;
-          box-sizing: border-box;
-        }
-        
-        body {
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-            'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-          -webkit-font-smoothing: antialiased;
-          -moz-osx-font-smoothing: grayscale;
-        }
-        
-        .container {
-          display: flex;
-          height: 100vh;
-          background: #f8f9fa;
-        }
-        
-        .left-panel {
-          width: 40%;
-          background: white;
-          border-right: 1px solid #e5e7eb;
-          display: flex;
-          flex-direction: column;
-        }
-        
-        .right-panel {
-          flex: 1;
-          background: white;
-          display: flex;
-          flex-direction: column;
-        }
-        
-        .header {
-          padding: 24px 32px;
-          background: white;
-          border-bottom: 1px solid #f0f0f0;
-        }
-        
-        .header-content {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-        }
-        
-        .icon-box {
-          width: 40px;
-          height: 40px;
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          border-radius: 12px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-        
-        .icon-box.blue {
-          background: linear-gradient(135deg, #3b82f6 0%, #06b6d4 100%);
-        }
-        
-        .header-title {
-          font-size: 20px;
-          font-weight: 600;
-          color: #111827;
-          margin-bottom: 4px;
-        }
-        
-        .header-subtitle {
-          font-size: 14px;
-          color: #6b7280;
-        }
-        
-        .content-area {
-          flex: 1;
-          overflow-y: auto;
-          padding: 32px;
-        }
-        
-        .upload-area {
-          border: 2px dashed #d1d5db;
-          border-radius: 16px;
-          padding: 48px;
-          text-align: center;
-          cursor: pointer;
-          transition: all 0.3s ease;
-          background: linear-gradient(135deg, #f9fafb 0%, white 100%);
-        }
-        
-        .upload-area:hover {
-          border-color: #9ca3af;
-          background: linear-gradient(135deg, #f3f4f6 0%, white 100%);
-        }
-        
-        .upload-area.dragging {
-          border-color: #667eea;
-          background: linear-gradient(135deg, #ede9fe 0%, #f3e8ff 100%);
-          transform: scale(1.02);
-        }
-        
-        .upload-icon {
-          width: 48px;
-          height: 48px;
-          background: linear-gradient(135deg, #ede9fe 0%, #ddd6fe 100%);
-          border-radius: 50%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          margin: 0 auto 16px;
-        }
-        
-        .file-list {
-          margin-top: 24px;
-        }
-        
-        .file-list-title {
-          font-size: 14px;
-          font-weight: 600;
-          color: #4b5563;
-          margin-bottom: 12px;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        
-        .file-item {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          padding: 12px;
-          background: #f9fafb;
-          border-radius: 12px;
-          margin-bottom: 8px;
-          transition: all 0.2s ease;
-        }
-        
-        .file-item:hover {
-          background: #f3f4f6;
-        }
-        
-        .file-icon {
-          width: 32px;
-          height: 32px;
-          background: white;
-          border-radius: 8px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-        }
-        
-        .file-info {
-          flex: 1;
-        }
-        
-        .file-name {
-          font-size: 14px;
-          font-weight: 500;
-          color: #111827;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        
-        .file-size {
-          font-size: 12px;
-          color: #6b7280;
-        }
-        
-        .remove-btn {
-          width: 28px;
-          height: 28px;
-          border: none;
-          background: transparent;
-          color: #ef4444;
-          cursor: pointer;
-          border-radius: 6px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          opacity: 0;
-          transition: all 0.2s ease;
-        }
-        
-        .file-item:hover .remove-btn {
-          opacity: 1;
-        }
-        
-        .remove-btn:hover {
-          background: #fee2e2;
-        }
-        
-        .action-btn {
-          width: 100%;
-          padding: 16px 24px;
-          margin-top: 32px;
-          border: none;
-          border-radius: 12px;
-          font-size: 15px;
-          font-weight: 600;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 8px;
-          transition: all 0.3s ease;
-        }
-        
-        .action-btn.primary {
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          color: white;
-          box-shadow: 0 4px 6px rgba(102, 126, 234, 0.25);
-        }
-        
-        .action-btn.primary:hover:not(:disabled) {
-          transform: translateY(-2px);
-          box-shadow: 0 6px 12px rgba(102, 126, 234, 0.35);
-        }
-        
-        .action-btn:disabled {
-          background: #e5e7eb;
-          color: #9ca3af;
-          cursor: not-allowed;
-        }
-        
-        .progress-bar {
-          width: 100%;
-          height: 8px;
-          background: #e5e7eb;
-          border-radius: 4px;
-          overflow: hidden;
-          margin-top: 16px;
-        }
-        
-        .progress-fill {
-          height: 100%;
-          background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-          border-radius: 4px;
-          transition: width 0.5s ease;
-        }
-        
-        .status-box {
-          padding: 16px;
-          border-radius: 12px;
-          display: flex;
-          align-items: center;
-          gap: 12px;
-        }
-        
-        .status-box.ready {
-          background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
-          border: 1px solid #86efac;
-        }
-        
-        .status-box.waiting {
-          background: #f9fafb;
-          border: 1px solid #e5e7eb;
-        }
-        
-        .status-icon {
-          width: 32px;
-          height: 32px;
-          border-radius: 8px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-        
-        .status-icon.ready {
-          background: #dcfce7;
-        }
-        
-        .status-icon.waiting {
-          background: #f3f4f6;
-        }
-        
-        .messages-area {
-          flex: 1;
-          overflow-y: auto;
-          padding: 32px;
-        }
-        
-        .empty-state {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          height: 100%;
-          text-align: center;
-        }
-        
-        .empty-icon {
-          width: 80px;
-          height: 80px;
-          background: linear-gradient(135deg, #f3f4f6 0%, white 100%);
-          border-radius: 24px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          margin-bottom: 24px;
-        }
-        
-        .message {
-          display: flex;
-          gap: 12px;
-          margin-bottom: 16px;
-          animation: fadeIn 0.3s ease;
-        }
-        
-        .message.user {
-          justify-content: flex-end;
-        }
-        
-        .message-avatar {
-          width: 32px;
-          height: 32px;
-          border-radius: 10px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          flex-shrink: 0;
-        }
-        
-        .message-avatar.ai {
-          background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
-        }
-        
-        .message-avatar.user {
-          background: linear-gradient(135deg, #dbeafe 0%, #c7d2fe 100%);
-        }
-        
-        .message-avatar.system {
-          background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
-        }
-        
-        .message-content {
-          max-width: 70%;
-        }
-        
-        .message-bubble {
-          padding: 12px 16px;
-          border-radius: 16px;
-          font-size: 14px;
-          line-height: 1.5;
-        }
-        
-        .message-bubble.ai {
-          background: #f3f4f6;
-          color: #111827;
-        }
-        
-        .message-bubble.user {
-          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-          color: white;
-        }
-        
-        .message-bubble.system {
-          background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
-          color: #065f46;
-          border: 1px solid #86efac;
-        }
-        
-        .message-time {
-          font-size: 11px;
-          color: #9ca3af;
-          margin-top: 4px;
-          padding: 0 4px;
-        }
-        
-        .message.user .message-time {
-          text-align: right;
-        }
-        
-        .typing-indicator {
-          display: flex;
-          gap: 4px;
-          padding: 12px 16px;
-          background: #f3f4f6;
-          border-radius: 16px;
-          width: fit-content;
-        }
-        
-        .typing-dot {
-          width: 8px;
-          height: 8px;
-          background: #6b7280;
-          border-radius: 50%;
-          animation: bounce 1.4s infinite ease-in-out;
-        }
-        
-        .typing-dot:nth-child(2) {
-          animation-delay: 0.2s;
-        }
-        
-        .typing-dot:nth-child(3) {
-          animation-delay: 0.4s;
-        }
-        
-        .input-area {
-          padding: 24px 32px;
-          background: #f9fafb;
-          border-top: 1px solid #e5e7eb;
-        }
-        
-        .input-wrapper {
-          display: flex;
-          gap: 12px;
-        }
-        
-        .input-field {
-          flex: 1;
-          padding: 12px 16px;
-          border: 1px solid #d1d5db;
-          border-radius: 12px;
-          font-size: 14px;
-          outline: none;
-          transition: all 0.2s ease;
-          background: white;
-        }
-        
-        .input-field:focus {
-          border-color: #3b82f6;
-          box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-        }
-        
-        .input-field:disabled {
-          background: #f3f4f6;
-          color: #9ca3af;
-        }
-        
-        .send-btn {
-          padding: 12px 24px;
-          border: none;
-          border-radius: 12px;
-          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-          color: white;
-          font-weight: 600;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          transition: all 0.3s ease;
-        }
-        
-        .send-btn:hover:not(:disabled) {
-          transform: translateY(-2px);
-          box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
-        }
-        
-        .send-btn:disabled {
-          background: #e5e7eb;
-          color: #9ca3af;
-          cursor: not-allowed;
-        }
-        
-        .input-hint {
-          margin-top: 12px;
-          font-size: 12px;
-          color: #6b7280;
-          display: flex;
-          gap: 16px;
-        }
-        
-        .online-indicator {
-          position: absolute;
-          bottom: -2px;
-          right: -2px;
-          width: 12px;
-          height: 12px;
-          background: #10b981;
-          border: 2px solid white;
-          border-radius: 50%;
-          animation: pulse 2s infinite;
-        }
-        
-        @keyframes fadeIn {
-          from {
-            opacity: 0;
-            transform: translateY(10px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-        
-        @keyframes bounce {
-          0%, 80%, 100% {
-            transform: scale(0);
-          }
-          40% {
-            transform: scale(1);
-          }
-        }
-        
-        @keyframes pulse {
-          0% {
-            box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
-          }
-          70% {
-            box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
-          }
-          100% {
-            box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
-          }
-        }
-        
-        @keyframes spin {
-          from {
-            transform: rotate(0deg);
-          }
-          to {
-            transform: rotate(360deg);
-          }
-        }
-        
-        .animate-spin {
-          animation: spin 1s linear infinite;
-        }
-      `}</style>
-      
       <div className="container">
         {/* 왼쪽 패널 */}
         <div className="left-panel">
